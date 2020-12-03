@@ -5,21 +5,13 @@ The gradient flows smoothly to the raw time domain audio,
 so that adversarial samples can be generated in the time domain.
 Model contributed by: USC SAIL (sail.usc.edu)
 """
-import logging
-
 from art.classifiers import PyTorchClassifier
 import numpy as np
 import torch
 
 from armory.data.utils import maybe_download_weights_from_s3
 
-# Load model from USC SAIL external repo: https://github.com/usc-sail/gard-eval-june2020
-# This needs to be defined in your config's `external_github_repo` field to be
-# downloaded and placed on the PYTHONPATH
 import dnn_models
-import pdb
-
-logger = logging.getLogger(__name__)
 
 #TODO: eval time full len testing should be included
 #Now it trains and evals with 3s segments
@@ -70,20 +62,14 @@ def sail(weights_file=None):
 
 # NOTE: PyTorchClassifier expects numpy input, not torch.Tensor input
 def get_art_model(model_kwargs, wrapper_kwargs, weights_file=None):
-    model = sail(weights_file=weights_file, **model_kwargs)
+    model = sail(weights_file=weights_file)
     model.to(DEVICE)
     wrapped_model = PyTorchClassifier(
         model,
         loss=torch.nn.CrossEntropyLoss(),
-        #optimizer=torch.optim.SGD(
-        #    model.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-4
-        #),
         optimizer=torch.optim.Adam(
-            model.parameters(), lr=5e-4, betas=(.5, .999)
+            model.parameters(), lr=model_kwargs['lr'], betas=(.5, .999)
         ),
-        #optimizer=torch.optim.Adam(
-        #    model.parameters(), lr=1e-4, betas=(.5, .999)
-        #),
         input_shape=(WINDOW_LENGTH,),
         nb_classes=40,
     )

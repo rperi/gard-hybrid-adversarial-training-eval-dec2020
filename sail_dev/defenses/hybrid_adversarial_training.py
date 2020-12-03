@@ -1,29 +1,31 @@
 from art.defences.trainer.trainer import Trainer
 
 import torch
-
-import pdb
 import numpy as np
 
 from sail_dev.models.feature_scatter_attack_hybrid import Attack_FeaScatter
 from sail_dev.models import RawAudioCNN
-from hparams import hp
 
 from sklearn.metrics import accuracy_score
 from torch.utils.tensorboard import SummaryWriter
 import os
 from tqdm import tqdm
 
+save_freq = 20 # Save model after every <save_freq> number of epochs
+
 # config for feature scatter
+epsilon = 0.002
+eps_step = 0.0004
 config_feature_scatter = {
     'train': True,
-    #'epsilon': 8.0 / 255 * 2,
-    'epsilon': 0.01,
+    'epsilon': epsilon,
     'num_steps': 10,
-    #'step_size': 8.0 / 255 * 2,
-    'step_size': 0.01 / 5,
+    'step_size': eps_step,
     'random_start': True,
     'ls_factor': 0.5,
+    'lr_decay_epoch_1': 60,
+    'lr_decay_epoch_2': 90,
+    'lr_decay_rate': 0.1
 }
 
 def compute_accuracy(targets, pred):
@@ -37,24 +39,26 @@ def seed_random():
 
 class HybridAdversarialTraining(Trainer):
     """
-    Class performing adversarial training following Madry's Protocol.
-    Paper link: https://arxiv.org/abs/1706.06083
-    Please keep in mind the limitations of defences. While adversarial training is
-    widely regarded as a promising, principled approach to making classifiers more
-    robust (see https://arxiv.org/abs/1802.00420), very careful evaluations are
-    required to assess its effectiveness case by case (see https://arxiv.org/abs/1902.06705).
+    Class performing hybrid adversarial training
+    Paper link: https://arxiv.org/pdf/2010.16038.pdf
     """
 
     def __init__(self, classifier=None):
         self.classifier  = classifier 
         self.classification_model = classifier._model._model
+        self.weights_file = None 
+        self.optim_file = None 
+        if self.weights_file:
+            self.classification_model = self._load_weights()
         self.model = self._create_model()
         self.criterion = classifier._loss
         self.optimizer = classifier._optimizer
+        if self.optim_file:
+            self.optimizer = torch.load(self.optim_file)
         self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model.to(self._device)
-        self.log_dir = '/work/rperi/gard/scripts/eval_Dec2020/logs/FGSM_defended_HAT10AT/epochs_300_Adam_lr1e-4/'
-        self.model_dir = '/work/rperi/gard/scripts/eval_Dec2020/saved_models/FGSM_defended_HAT10AT/epochs_300_Adam_lr1e-4/'
+        self.log_dir = './logs/'
+        self.model_dir = './saved_models/'
 
         self._create_dirs([self.log_dir,self.model_dir])
         self.writer = SummaryWriter(log_dir=self.log_dir)
@@ -63,8 +67,12 @@ class HybridAdversarialTraining(Trainer):
         self.ep_idx = 0
         
         seed_random()
+    
     def _create_model(self):
         return Attack_FeaScatter(self.classification_model, config_feature_scatter)
+    
+    def _load_weights(self):
+        return torch.load(self.weights_file)
 
     def _create_dirs(self, dirs):
         for direc in dirs:
@@ -86,14 +94,15 @@ class HybridAdversarialTraining(Trainer):
             pred_adv_epoch = []
             #print("Training Epoch {}/{}".format(epoch, nb_epochs))
             self.ep_idx = epoch
-            # update learning rate
-            if False:
-                if epoch < 60:
+            
+            # update learning rate when used with SGD optimizer. Not used with Adam
+            if isinstance(self.optimizer, torch.optim.SGD):
+                if epoch < config_feature_scatter['lr_decay_epoch_1']:
                     lr = init_lr
-                elif epoch < 90:
-                    lr = init_lr * 0.1
+                elif epoch < config_feature_scatter['lr_decay_epoch_2']:
+                    lr = init_lr * config_feature_scatter['lr_decay_rate']
                 else:
-                    lr = init_lr * 0.1 * 0.1
+                    lr = init_lr * config_feature_scatter['lr_decay_rate']* config_feature_scatter['lr_decay_rate']
 
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = lr
@@ -130,7 +139,8 @@ class HybridAdversarialTraining(Trainer):
             self.write_acc(adv_acc, type='Adv')
 
             self.write_log(nat_acc, adv_acc)
-            torch.save(self.model.basic_net,os.path.join(self.model_dir,'HAT_saved_model_epoch_{}.pth'.format(epoch)))
+            if epoch%save_freq == 0:
+                torch.save(self.model.basic_net,os.path.join(self.model_dir,'saved_ep_{}.pth'.format(epoch)))
         print("Done training")
         self.writer.flush()
         self.writer.close()
